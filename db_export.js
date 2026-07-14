@@ -43,6 +43,10 @@ async function main() {
     console.log('📦 Generating Prisma Client for SQLite...');
     runCommand('npx prisma generate', __dirname);
 
+    // Synchronize SQLite schema to add missing columns if any
+    console.log('🔄 Synchronizing SQLite schema with dev.db...');
+    runCommand('npx prisma db push', __dirname);
+
     // 4. Run export query script
     console.log('📤 Executing export query...');
     runCommand('node db_export_query.js', __dirname);
