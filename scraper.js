@@ -208,10 +208,14 @@ async function main() {
     console.log('ℹ️ سيتم التحديث التراكمي (Upsert) دون مسح البيانات القديمة لتمكين إيقاف واستكمال السحب.');
     if (fs.existsSync(stateFilePath)) {
       try {
-        state = JSON.parse(fs.readFileSync(stateFilePath, 'utf8'));
-        console.log(`ℹ️ تم العثور على جلسة سابقة. آخر صفحة تم سحبها: مسلسلات (${state.lastAnimePage})، أفلام (${state.lastMoviePage}).`);
+        const savedState = JSON.parse(fs.readFileSync(stateFilePath, 'utf8'));
+        // Validate values — default to 1 if undefined/NaN/0
+        state.lastAnimePage = parseInt(savedState.lastAnimePage, 10) || 1;
+        state.lastMoviePage = parseInt(savedState.lastMoviePage, 10) || 1;
+        console.log(`ℹ️ تم العثور على جلسة سابقة. استكمال من: مسلسلات صفحة (${state.lastAnimePage})، أفلام صفحة (${state.lastMoviePage}).`);
       } catch (e) {
-        console.error('⚠️ خطأ في قراءة ملف الجلسة السابقة:', e.message);
+        console.error('⚠️ خطأ في قراءة ملف الجلسة السابقة، سيتم البدء من الصفحة 1:', e.message);
+        state = { lastAnimePage: 1, lastMoviePage: 1 };
       }
     }
   }
@@ -232,9 +236,12 @@ async function main() {
       currentPage = startPageArg;
       console.log(`ℹ️ البدء من الصفحة المحددة يدوياً: ${currentPage}`);
     } else {
-      currentPage = isMovie ? state.lastMoviePage : state.lastAnimePage;
+      const savedPage = isMovie ? state.lastMoviePage : state.lastAnimePage;
+      currentPage = (Number.isInteger(savedPage) && savedPage >= 1) ? savedPage : 1;
       if (currentPage > 1) {
         console.log(`ℹ️ استكمال السحب تلقائياً من الصفحة: ${currentPage}`);
+      } else {
+        console.log(`ℹ️ بدء السحب من الصفحة 1.`);
       }
     }
     let hasMore = true;
