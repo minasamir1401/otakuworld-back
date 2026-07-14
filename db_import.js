@@ -7,9 +7,8 @@ const dataPath = path.resolve(__dirname, 'migration_data.json');
 
 async function main() {
   if (!fs.existsSync(dataPath)) {
-    console.error(`❌ Migration data file not found at: ${dataPath}`);
-    console.error('Please run "node db_export.js" on the source machine first.');
-    process.exit(1);
+    console.log(`ℹ️ No migration data file found at: ${dataPath}. Skipping migration.`);
+    process.exit(0);
   }
 
   console.log('🚀 Starting data import to PostgreSQL...');
@@ -201,6 +200,16 @@ async function main() {
   console.log(`   - Video Servers: ${serverCount}`);
   console.log(`   - Download Links: ${downloadCount}`);
   console.log(`   - Visits: ${visitCount}`);
+
+  // Delete the migration file after successful import to prevent runs on next boot
+  try {
+    if (fs.existsSync(dataPath)) {
+      fs.unlinkSync(dataPath);
+      console.log('🗑️ Deleted migration_data.json to prevent subsequent runs.');
+    }
+  } catch (err) {
+    console.warn('⚠️ Warning: Failed to delete migration_data.json:', err.message);
+  }
 }
 
 main()
