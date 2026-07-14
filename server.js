@@ -20,8 +20,8 @@ function runSyncer() {
 }
 
 // Start the syncer: run immediately on start, then every 2 hours
-runSyncer();
-setInterval(runSyncer, 1000 * 60 * 60 * 2); // 2 hours
+// runSyncer();
+// setInterval(runSyncer, 1000 * 60 * 60 * 2); // 2 hours
 
 // Create a simple HTTP server to keep the container active and satisfy Dokploy health checks
 const server = http.createServer((req, res) => {
