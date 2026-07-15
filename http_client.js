@@ -77,6 +77,7 @@ async function fetchWithPuppeteer(url, proxyUrl = null) {
 
   if (!sharedBrowser || !sharedBrowser.isConnected()) {
     sharedBrowser = await puppeteer.launch({
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
       headless: 'new',
       args
     });
