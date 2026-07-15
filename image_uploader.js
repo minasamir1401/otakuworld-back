@@ -1,6 +1,7 @@
 const { createClient } = require('@supabase/supabase-js');
 const httpClient = require('./http_client');
 const path = require('path');
+const fs = require('fs');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY || process.env.SUPABASE_SECRET_KEY || '';
@@ -57,11 +58,7 @@ async function uploadImageToSupabase(imageUrl, slug) {
 
   const supabase = getSupabase();
   if (!supabase) {
-    if (!uploadImageToSupabase._warned) {
-      console.log(`ℹ️ [Supabase Storage] سيتم حفظ الرابط الأصلي للصورة لأن متغير SUPABASE_URL لم يتم إضافته في الإعدادات بعد.`);
-      uploadImageToSupabase._warned = true;
-    }
-    return imageUrl;
+    return await saveImageLocally(imageUrl, slug);
   }
 
   try {
@@ -125,6 +122,52 @@ async function uploadImageToSupabase(imageUrl, slug) {
   }
 }
 
+async function saveImageLocally(imageUrl, slug) {
+  try {
+    const PUBLIC_POSTERS_DIR = path.resolve(__dirname, '..', 'FRONT END', 'public', 'posters');
+    if (!fs.existsSync(PUBLIC_POSTERS_DIR)) {
+      fs.mkdirSync(PUBLIC_POSTERS_DIR, { recursive: true });
+    }
+
+    console.log(`📥 [Local Storage] جاري تنزيل وحفظ بوستر الأنمي (${slug}) محلياً...`);
+
+    // Download image using http_client
+    let imageBuffer;
+    let contentType = 'image/jpeg';
+    try {
+      const response = await httpClient.get(imageUrl, { responseType: 'buffer', timeout: { request: 12000 } });
+      imageBuffer = response.data;
+      if (response.headers && response.headers['content-type']) {
+        contentType = response.headers['content-type'];
+      }
+    } catch (downloadErr) {
+      console.log(`⚠️ [Local Storage] تعذر تنزيل الصورة من المصدر (${imageUrl}): ${downloadErr.message}. سيتم الاحتفاظ بالرابط الأصلي.`);
+      return imageUrl;
+    }
+
+    if (!imageBuffer || imageBuffer.length === 0) return imageUrl;
+
+    // Determine extension
+    let ext = '.jpg';
+    if (contentType.includes('png')) ext = '.png';
+    else if (contentType.includes('webp')) ext = '.webp';
+    else if (contentType.includes('gif')) ext = '.gif';
+
+    const cleanSlug = (slug || 'poster').replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+    const fileName = `${cleanSlug}${ext}`;
+    const filePath = path.join(PUBLIC_POSTERS_DIR, fileName);
+
+    // Save locally
+    fs.writeFileSync(filePath, imageBuffer);
+    console.log(`✅ [Local Storage] تم حفظ البوستر بنجاح: /posters/${fileName}`);
+    return `/posters/${fileName}`;
+  } catch (error) {
+    console.error(`⚠️ [Local Storage] حدث خطأ أثناء حفظ الصورة محلياً: ${error.message}`);
+    return imageUrl;
+  }
+}
+
 module.exports = {
-  uploadImageToSupabase
+  uploadImageToSupabase,
+  saveImageLocally
 };

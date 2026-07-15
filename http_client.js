@@ -1,5 +1,8 @@
 const fs = require('fs');
 const path = require('path');
+const { CookieJar } = require('tough-cookie');
+
+const cookieJar = new CookieJar();
 
 const proxyCacheFile = path.join(__dirname, 'working_proxy.txt');
 
@@ -16,6 +19,26 @@ const WEBSHARE_PROXIES = [
   'http://eepvcuhn:pak11kmxun9g@142.111.67.146:5611',
   'http://eepvcuhn:pak11kmxun9g@191.96.254.138:6185'
 ];
+
+function getBypassConfig() {
+  const localConfig = path.join(__dirname, 'admin_config.json');
+  const parentConfig = path.join(__dirname, '..', 'FRONT END', 'admin_config.json');
+  
+  let targetPath = null;
+  if (fs.existsSync(localConfig)) targetPath = localConfig;
+  else if (fs.existsSync(parentConfig)) targetPath = parentConfig;
+
+  if (targetPath) {
+    try {
+      const data = JSON.parse(fs.readFileSync(targetPath, 'utf8'));
+      return {
+        cfCookie: data.cfCookie || '',
+        userAgent: data.userAgent || ''
+      };
+    } catch (e) {}
+  }
+  return { cfCookie: '', userAgent: '' };
+}
 
 // Load cached working proxy
 function getCachedProxy() {
@@ -75,7 +98,8 @@ async function fetchWithPuppeteer(url, proxyUrl = null) {
     args.push(`--proxy-server=${cleanProxy}`);
   }
 
-  if (!sharedBrowser || !sharedBrowser.isConnected()) {
+  const isConnected = sharedBrowser && (typeof sharedBrowser.isConnected === 'function' ? sharedBrowser.isConnected() : sharedBrowser.connected);
+  if (!sharedBrowser || !isConnected) {
     sharedBrowser = await puppeteer.launch({
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
       headless: 'new',
@@ -91,7 +115,30 @@ async function fetchWithPuppeteer(url, proxyUrl = null) {
     }
   }
 
-  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36');
+  const bypass = getBypassConfig();
+  if (bypass.userAgent) {
+    await page.setUserAgent(bypass.userAgent);
+  } else {
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36');
+  }
+
+  if (bypass.cfCookie) {
+    const cookies = bypass.cfCookie.split(';').map(c => c.trim()).filter(Boolean);
+    const parsedCookies = cookies.map(c => {
+      const parts = c.split('=');
+      const name = parts[0].trim();
+      const value = parts.slice(1).join('=').trim();
+      return {
+        name,
+        value,
+        domain: '.animerco.org',
+        path: '/'
+      };
+    });
+    try {
+      await page.setCookie(...parsedCookies);
+    } catch (e) {}
+  }
 
   try {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 35000 });
@@ -138,6 +185,8 @@ async function makeProxyRequest(url, proxyUrl, options = {}) {
   return await got.get(url, {
     ...agentOpts,
     timeout: { request: 20000 },
+    cookieJar,
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36', ...options.headers },
     ...options
   });
 }
@@ -182,6 +231,13 @@ async function findWorkingProxy(targetUrl) {
 async function get(url, options = {}) {
   const got = await getGot();
 
+  const bypass = getBypassConfig();
+  if (bypass.cfCookie && bypass.userAgent) {
+    if (!options.headers) options.headers = {};
+    options.headers['Cookie'] = bypass.cfCookie;
+    options.headers['User-Agent'] = bypass.userAgent;
+  }
+
   // 1. Try with custom proxy if explicitly set
   const customProxy = process.env.SCRAPER_PROXY;
   if (customProxy) {
@@ -210,6 +266,8 @@ async function get(url, options = {}) {
   try {
     const response = await got.get(url, {
       timeout: { request: 8000 },
+      cookieJar,
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36', ...options.headers },
       ...options
     });
     if (!isCloudflareBlocked(response.statusCode, response.body)) {
@@ -233,6 +291,47 @@ async function get(url, options = {}) {
   return await fetchWithPuppeteer(url, newProxy || customProxy);
 }
 
+async function post(url, data, options = {}) {
+  const got = await getGot();
+
+  const bypass = getBypassConfig();
+  if (bypass.cfCookie && bypass.userAgent) {
+    if (!options.headers) options.headers = {};
+    options.headers['Cookie'] = bypass.cfCookie;
+    options.headers['User-Agent'] = bypass.userAgent;
+  }
+
+  let currentProxy = getCachedProxy();
+  let agentOpts = {};
+  if (currentProxy) {
+     let HttpsProxyAgent = null;
+     try {
+       const hpagent = await import('hpagent');
+       HttpsProxyAgent = hpagent.HttpsProxyAgent;
+     } catch(e) {}
+     if(HttpsProxyAgent && url.startsWith('https:')) {
+        agentOpts = { agent: { https: new HttpsProxyAgent({ proxy: currentProxy, timeout: 15000 }) } };
+     } else {
+        agentOpts = { proxyUrl: currentProxy };
+     }
+  }
+  
+  try {
+     const response = await got.post(url, {
+        body: data,
+        ...agentOpts,
+        timeout: { request: 15000 },
+        cookieJar,
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36', ...options.headers },
+        ...options
+     });
+     return { data: response.body, status: response.statusCode, headers: response.headers };
+  } catch(e) {
+     throw e;
+  }
+}
+
 module.exports = {
-  get
+  get,
+  post
 };
