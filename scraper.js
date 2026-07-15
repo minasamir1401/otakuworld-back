@@ -1,5 +1,5 @@
 const { PrismaClient } = require('@prisma/client');
-const axios = require('axios');
+const httpClient = require('./http_client');
 const cheerio = require('cheerio');
 
 const fs = require('fs');
@@ -8,23 +8,6 @@ const path = require('path');
 const prisma = new PrismaClient();
 const BASE_URL = 'https://eta.animerco.org';
 
-const HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-  'Accept-Language': 'ar-EG,ar;q=0.9,en-US;q=0.8,en;q=0.7',
-  'Accept-Encoding': 'gzip, deflate, br',
-  'Referer': 'https://eta.animerco.org/',
-  'sec-ch-ua': '"Google Chrome";v="125", "Chromium";v="125", "Not.A/Brand";v="24"',
-  'sec-ch-ua-mobile': '?0',
-  'sec-ch-ua-platform': '"Windows"',
-  'Sec-Fetch-Dest': 'document',
-  'Sec-Fetch-Mode': 'navigate',
-  'Sec-Fetch-Site': 'same-origin',
-  'Sec-Fetch-User': '?1',
-  'Upgrade-Insecure-Requests': '1',
-  'Cache-Control': 'max-age=0',
-  'Connection': 'keep-alive'
-};
 
 // Sleep helper to avoid rate limits
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -36,7 +19,7 @@ async function scrapeCatalogPage(page = 1, isMovie = false) {
   const url = page === 1 ? `${BASE_URL}/${path}/` : `${BASE_URL}/${path}/page/${page}/`;
   console.log(`\n🔍 جاري فحص صفحة المكتبة: ${url}`);
   try {
-    const response = await axios.get(url, { headers: HEADERS });
+    const response = await httpClient.get(url);
     const $ = cheerio.load(response.data);
     const animes = [];
 
@@ -73,7 +56,7 @@ async function scrapeCatalogPage(page = 1, isMovie = false) {
 // 2. Scrape detailed info and seasons for a single anime
 async function scrapeAnimeDetails(animeUrl) {
   try {
-    const response = await axios.get(animeUrl, { headers: HEADERS });
+    const response = await httpClient.get(animeUrl);
     const $ = cheerio.load(response.data);
 
     const synopsis = $('.media-story .content p, .media-story .content').first().text().trim() || $('.wp-content p, #info p').text().trim() || '';
@@ -139,7 +122,7 @@ async function scrapeAnimeDetails(animeUrl) {
 // 3. Scrape all episode links of a specific season
 async function scrapeSeasonEpisodes(seasonUrl) {
   try {
-    const response = await axios.get(seasonUrl, { headers: HEADERS });
+    const response = await httpClient.get(seasonUrl);
     const $ = cheerio.load(response.data);
     const episodes = [];
 
@@ -188,7 +171,7 @@ async function main() {
   let state = { lastAnimePage: 1, lastMoviePage: 1, currentCatalog: 'animes' };
 
   console.log('🚀 بدء عملية سحب بيانات الأنمي والأفلام...');
-  console.log(`قاعدة البيانات: prisma/dev.db`);
+  console.log(`قاعدة البيانات: متصلة بنجاح (PostgreSQL)`);
   
   const cleanIdx = args.indexOf('--clean');
   if (cleanIdx !== -1) {

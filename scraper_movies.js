@@ -1,5 +1,5 @@
 const { PrismaClient } = require('@prisma/client');
-const axios = require('axios');
+const httpClient = require('./http_client');
 const cheerio = require('cheerio');
 
 const fs = require('fs');
@@ -8,11 +8,6 @@ const path = require('path');
 const prisma = new PrismaClient();
 const BASE_URL = 'https://eta.animerco.org';
 
-const HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-  'Accept-Language': 'ar,en-US;q=0.7,en;q=0.3'
-};
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -20,7 +15,7 @@ async function scrapeCatalogPage(page = 1) {
   const url = page === 1 ? `${BASE_URL}/movies/` : `${BASE_URL}/movies/page/${page}/`;
   console.log(`\n🔍 جاري فحص صفحة مكتبة الأفلام: ${url}`);
   try {
-    const response = await axios.get(url, { headers: HEADERS });
+    const response = await httpClient.get(url);
     const $ = cheerio.load(response.data);
     const movies = [];
 
@@ -56,7 +51,7 @@ async function scrapeCatalogPage(page = 1) {
 
 async function scrapeMovieDetails(movieUrl) {
   try {
-    const response = await axios.get(movieUrl, { headers: HEADERS });
+    const response = await httpClient.get(movieUrl);
     const $ = cheerio.load(response.data);
 
     const synopsis = $('.media-story .content p, .media-story .content').first().text().trim() || $('.wp-content p, #info p').text().trim() || '';
