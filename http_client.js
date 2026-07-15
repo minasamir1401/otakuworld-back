@@ -1,15 +1,5 @@
-const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
-
-const HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-  'Accept-Language': 'ar-EG,ar;q=0.9,en-US;q=0.8,en;q=0.7',
-  'Accept-Encoding': 'gzip, deflate, br',
-  'Referer': 'https://eta.animerco.org/',
-  'Connection': 'keep-alive'
-};
 
 const proxyCacheFile = path.join(__dirname, 'working_proxy.txt');
 
@@ -30,11 +20,22 @@ function cacheProxy(proxyUrl) {
   } catch (e) {}
 }
 
-// Fetch fresh list of public free proxies
+// Lazy load gotScraping (since it is ESM only)
+let gotInstance = null;
+async function getGot() {
+  if (!gotInstance) {
+    const { gotScraping } = await import('got-scraping');
+    gotInstance = gotScraping;
+  }
+  return gotInstance;
+}
+
+// Fetch fresh list of public free proxies using got-scraping
 async function fetchFreeProxies() {
   try {
-    const res = await axios.get('https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt', { timeout: 10000 });
-    return res.data.split('\n').map(p => p.trim()).filter(p => p);
+    const got = await getGot();
+    const res = await got.get('https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt', { timeout: { request: 10000 } });
+    return res.body.split('\n').map(p => p.trim()).filter(p => p);
   } catch (e) {
     console.error('[Proxy Finder] Failed to fetch free proxy list:', e.message);
     return [];
@@ -43,18 +44,14 @@ async function fetchFreeProxies() {
 
 // Test if a proxy works for animerco.org
 async function testProxy(proxyStr, targetUrl) {
-  const [host, port] = proxyStr.split(':');
   try {
-    const res = await axios.get(targetUrl, {
-      headers: HEADERS,
-      timeout: 5000,
-      proxy: {
-        protocol: 'http',
-        host: host,
-        port: parseInt(port, 10)
-      }
+    const got = await getGot();
+    const res = await got.get(targetUrl, {
+      proxyUrl: `http://${proxyStr}`,
+      timeout: { request: 6000 },
+      retry: { limit: 0 }
     });
-    if (res.status === 200) {
+    if (res.statusCode === 200) {
       return true;
     }
   } catch (e) {}
@@ -67,7 +64,7 @@ async function findWorkingProxy(targetUrl) {
   const proxies = await fetchFreeProxies();
   if (proxies.length === 0) return null;
 
-  // Shuffle proxies to avoid everyone using the first one
+  // Shuffle proxies
   const shuffled = proxies.sort(() => 0.5 - Math.random());
   
   const BATCH_SIZE = 10;
@@ -90,69 +87,57 @@ async function findWorkingProxy(targetUrl) {
 }
 
 async function get(url, options = {}) {
+  const got = await getGot();
+
   // If user defined a custom proxy in environment, prioritize it
   const customProxy = process.env.SCRAPER_PROXY;
   if (customProxy) {
-    const u = new URL(customProxy);
-    const config = {
-      headers: HEADERS,
-      timeout: 15000,
-      proxy: {
-        protocol: u.protocol.replace(':', ''),
-        host: u.hostname,
-        port: parseInt(u.port, 10)
-      }
-    };
-    if (u.username && u.password) {
-      config.proxy.auth = {
-        username: decodeURIComponent(u.username),
-        password: decodeURIComponent(u.password)
-      };
-    }
-    return axios.get(url, config);
+    console.log(`[HTTP Client] Using custom proxy: ${customProxy}`);
+    const response = await got.get(url, {
+      proxyUrl: customProxy,
+      timeout: { request: 20000 },
+      ...options
+    });
+    return { data: response.body, status: response.statusCode, headers: response.headers };
   }
 
-  // Otherwise, use our automatic free proxy rotater!
+  // Otherwise, try with cached proxy first (if exists)
   let currentProxy = getCachedProxy();
-  
-  // Try with cached proxy first (if exists)
   if (currentProxy) {
     try {
-      const u = new URL(currentProxy);
-      return await axios.get(url, {
-        headers: HEADERS,
-        timeout: 10000,
-        proxy: {
-          protocol: 'http',
-          host: u.hostname,
-          port: parseInt(u.port, 10)
-        }
+      console.log(`[HTTP Client] Trying cached proxy: ${currentProxy}`);
+      const response = await got.get(url, {
+        proxyUrl: currentProxy,
+        timeout: { request: 12000 },
+        ...options
       });
+      return { data: response.body, status: response.statusCode, headers: response.headers };
     } catch (err) {
       console.log(`[Proxy] Cached proxy ${currentProxy} failed, finding a new one...`);
       cacheProxy(null); // invalidate
     }
   }
 
-  // If no cached proxy or it failed, try without proxy (in case it is local)
+  // Try direct connection using got-scraping (TLS Fingerprint Spoofing)
   try {
-    return await axios.get(url, { headers: HEADERS, timeout: 8000 });
+    console.log('[HTTP Client] Requesting directly with TLS spoofing...');
+    const response = await got.get(url, {
+      timeout: { request: 8000 },
+      ...options
+    });
+    return { data: response.body, status: response.statusCode, headers: response.headers };
   } catch (err) {
-    const isBlocked = err.response && err.response.status === 403 || err.code === 'ECONNABORTED' || err.message.includes('403');
+    const isBlocked = err.response && err.response.statusCode === 403 || err.code === 'ETIMEDOUT' || err.message.includes('403');
     if (isBlocked) {
-      console.log('[Proxy] Request blocked (403/Timeout). Initiating automatic bypass...');
+      console.log('[Proxy] Direct request blocked (403/Timeout). Initiating automatic free proxy rotator...');
       const newProxy = await findWorkingProxy(url);
       if (newProxy) {
-        const u = new URL(newProxy);
-        return await axios.get(url, {
-          headers: HEADERS,
-          timeout: 15000,
-          proxy: {
-            protocol: 'http',
-            host: u.hostname,
-            port: parseInt(u.port, 10)
-          }
+        const response = await got.get(url, {
+          proxyUrl: newProxy,
+          timeout: { request: 20000 },
+          ...options
         });
+        return { data: response.body, status: response.statusCode, headers: response.headers };
       }
     }
     throw err;
@@ -160,6 +145,5 @@ async function get(url, options = {}) {
 }
 
 module.exports = {
-  get,
-  HEADERS
+  get
 };
