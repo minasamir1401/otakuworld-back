@@ -1,11 +1,27 @@
-const http = require('http');
+const express = require('express');
+const cors = require('cors');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { PrismaClient } = require('@prisma/client');
 
+const app = express();
 const PORT = process.env.PORT || 5000;
-// Secret key shared with Frontend (set via env var BACKEND_SECRET)
 const SECRET = process.env.BACKEND_SECRET || 'otakuworld-secret-2025';
+
+const prisma = new PrismaClient();
+
+app.use(cors());
+app.use(express.json({ limit: '50mb' }));
+
+// Authentication Middleware
+function authenticate(req, res, next) {
+  const authHeader = req.headers['authorization'] || '';
+  if (authHeader !== `Bearer ${SECRET}`) {
+    return res.status(403).json({ success: false, error: 'غير مصرح بالدخول' });
+  }
+  next();
+}
 
 // ─────────── Helpers ─────────────────────────────────────────────────────────
 
@@ -30,37 +46,63 @@ function getStatus(name) {
   return { running: false, pid: null };
 }
 
-function readBody(req) {
-  return new Promise((resolve) => {
-    let data = '';
-    req.on('data', chunk => data += chunk);
-    req.on('end', () => {
-      try { resolve(JSON.parse(data)); }
-      catch (e) { resolve({}); }
-    });
-  });
-}
-
-function json(res, statusCode, body) {
-  const payload = JSON.stringify(body);
-  res.writeHead(statusCode, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Authorization, Content-Type',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
-  });
-  res.end(payload);
-}
-
-function auth(req) {
-  const h = req.headers['authorization'] || '';
-  return h === `Bearer ${SECRET}`;
+// Recursive reviver for ISO Dates in query arguments
+function reviveDates(obj) {
+  if (obj === null || obj === undefined) return obj;
+  if (typeof obj === 'string') {
+    const isoDateRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+    if (isoDateRegex.test(obj)) {
+      return new Date(obj);
+    }
+    return obj;
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(reviveDates);
+  }
+  if (typeof obj === 'object') {
+    for (const key in obj) {
+      if (Object.prototype.hasOwnProperty.call(obj, key)) {
+        obj[key] = reviveDates(obj[key]);
+      }
+    }
+  }
+  return obj;
 }
 
 // ─────────── Routes ───────────────────────────────────────────────────────────
 
-function handleStatus(res) {
-  json(res, 200, {
+// Health check
+app.get('/', (req, res) => {
+  res.send('Otakuworld Backend API is running.');
+});
+
+// Execute DB Query
+app.post('/api/db-query', authenticate, async (req, res) => {
+  const { model, method, args } = req.body;
+  if (!model || !method) {
+    return res.status(400).send('Missing model or method');
+  }
+
+  try {
+    if (!prisma[model]) {
+      return res.status(400).send(`Model "${model}" not found in Prisma client`);
+    }
+    if (typeof prisma[model][method] !== 'function') {
+      return res.status(400).send(`Method "${method}" not found on model "${model}"`);
+    }
+
+    const revivedArgs = reviveDates(args) || [];
+    const result = await prisma[model][method](...revivedArgs);
+    res.json(result);
+  } catch (error) {
+    console.error(`[Prisma Query Error] ${model}.${method}:`, error);
+    res.status(500).send(error.message || 'Database query failed');
+  }
+});
+
+// GET /scraper/status
+app.get('/scraper/status', authenticate, (req, res) => {
+  res.json({
     success: true,
     scrapers: {
       animeScraper: getStatus('anime_scraper'),
@@ -68,9 +110,11 @@ function handleStatus(res) {
       scheduleSync: getStatus('schedule_sync')
     }
   });
-}
+});
 
-function handleLogs(res, type) {
+// GET /scraper/logs
+app.get('/scraper/logs', authenticate, (req, res) => {
+  const type = req.query.type;
   const logFiles = {
     anime: 'anime_scraper.log',
     movies: 'movies_scraper.log',
@@ -78,26 +122,25 @@ function handleLogs(res, type) {
   };
 
   const logFile = logFiles[type];
-  if (!logFile) return json(res, 400, { success: false, error: 'نوع سكربت غير صالح' });
+  if (!logFile) return res.status(400).json({ success: false, error: 'نوع سكربت غير صالح' });
 
   const logPath = path.join(__dirname, logFile);
   if (!fs.existsSync(logPath)) {
-    return json(res, 200, { success: true, running: getStatus(logFile.replace('.log', '')).running, logs: 'لا توجد سجلات بعد لهذا السكربت.' });
+    const statusMap = { anime: 'anime_scraper', movies: 'movies_scraper', sync: 'schedule_sync' };
+    return res.json({ success: true, running: getStatus(statusMap[type]).running, logs: 'لا توجد سجلات بعد لهذا السكربت.' });
   }
 
   const content = fs.readFileSync(logPath, 'utf8');
   const lines = content.split('\n');
   const lastLines = lines.slice(-150).join('\n');
 
-  const statusMap = {
-    anime: 'anime_scraper',
-    movies: 'movies_scraper',
-    sync: 'schedule_sync'
-  };
-  json(res, 200, { success: true, running: getStatus(statusMap[type]).running, logs: lastLines });
-}
+  const statusMap = { anime: 'anime_scraper', movies: 'movies_scraper', sync: 'schedule_sync' };
+  res.json({ success: true, running: getStatus(statusMap[type]).running, logs: lastLines });
+});
 
-function handleTrigger(res, type) {
+// POST /scraper/trigger
+app.post('/scraper/trigger', authenticate, (req, res) => {
+  const type = req.body.type;
   const scripts = {
     anime:  { script: 'scraper.js',         pid: 'anime_scraper',  log: 'anime_scraper.log'  },
     movies: { script: 'scraper_movies.js',   pid: 'movies_scraper', log: 'movies_scraper.log' },
@@ -105,10 +148,10 @@ function handleTrigger(res, type) {
   };
 
   const cfg = scripts[type];
-  if (!cfg) return json(res, 400, { success: false, error: 'نوع سكربت غير صالح' });
+  if (!cfg) return res.status(400).json({ success: false, error: 'نوع سكربت غير صالح' });
 
   const status = getStatus(cfg.pid);
-  if (status.running) return json(res, 400, { success: false, error: 'هذا السكربت يعمل بالفعل حالياً' });
+  if (status.running) return res.status(400).json({ success: false, error: 'هذا السكربت يعمل بالفعل حالياً' });
 
   const logPath = path.join(__dirname, cfg.log);
   const pidPath = path.join(__dirname, cfg.pid + '.pid');
@@ -127,53 +170,9 @@ function handleTrigger(res, type) {
   fs.writeFileSync(pidPath, String(child.pid), 'utf8');
   console.log(`[Scraper] Started ${cfg.script} with PID ${child.pid}`);
 
-  json(res, 200, { success: true, message: `تم إطلاق السكربت بنجاح في الخلفية`, pid: child.pid });
-}
-
-// ─────────── HTTP Server ──────────────────────────────────────────────────────
-
-const server = http.createServer(async (req, res) => {
-  // CORS preflight
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204, {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Headers': 'Authorization, Content-Type',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
-    });
-    return res.end();
-  }
-
-  // Health check (no auth required)
-  if (req.method === 'GET' && req.url === '/') {
-    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-    return res.end('Otakuworld Backend API is running.');
-  }
-
-  // Auth check for all other routes
-  if (!auth(req)) return json(res, 403, { success: false, error: 'غير مصرح بالدخول' });
-
-  const url = new URL(req.url, `http://localhost:${PORT}`);
-  const pathname = url.pathname;
-
-  // GET /scraper/status  → status of all scrapers
-  if (req.method === 'GET' && pathname === '/scraper/status') {
-    return handleStatus(res);
-  }
-
-  // GET /scraper/logs?type=anime|movies|sync
-  if (req.method === 'GET' && pathname === '/scraper/logs') {
-    return handleLogs(res, url.searchParams.get('type'));
-  }
-
-  // POST /scraper/trigger  { type: 'anime'|'movies'|'sync' }
-  if (req.method === 'POST' && pathname === '/scraper/trigger') {
-    const body = await readBody(req);
-    return handleTrigger(res, body.type);
-  }
-
-  json(res, 404, { success: false, error: 'المسار غير موجود' });
+  res.json({ success: true, message: `تم إطلاق السكربت بنجاح في الخلفية`, pid: child.pid });
 });
 
-server.listen(PORT, () => {
+app.listen(PORT, () => {
   console.log(`[Server] Backend API listening on port ${PORT}`);
 });

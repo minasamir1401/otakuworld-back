@@ -23,5 +23,6 @@ EXPOSE 5000
 ENV PORT=5000
 ENV NODE_ENV=production
 
-# Start the server daemon
-CMD ["node", "server.js"]
+# Start the server daemon with database push
+CMD ["sh", "-c", "npx prisma db push && node server.js"]
+
