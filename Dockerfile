@@ -1,4 +1,4 @@
-FROM node:20-alpine
+FROM node:22-alpine
 
 # Install OpenSSL for Prisma, plus Chromium and its required dependencies for Puppeteer
 RUN apk add --no-cache \
