@@ -77,3 +77,13 @@ model Visit {
   ip        String?
   createdAt DateTime @default(now())
 }
+
+model AppConfig {
+  id        String   @id @default("singleton")
+  cfCookie  String?  @db.Text
+  userAgent String?  @db.Text
+  cfProxy   String?
+  username  String   @default("admin")
+  password  String   @default("adminpassword")
+  updatedAt DateTime @updatedAt
+}
