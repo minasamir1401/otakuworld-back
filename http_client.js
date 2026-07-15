@@ -97,10 +97,15 @@ async function fetchWithPuppeteer(url, proxyUrl = null) {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 35000 });
     
     // Check if Cloudflare JS challenge is currently running inside browser
-    const title = await page.title();
-    if (title && (title.includes('Just a moment') || title.includes('Attention Required'))) {
-      console.log('[Puppeteer + Cheerio] ⏳ اكتشاف تحدي جافاسكربت من Cloudflare داخل المتصفح... انتظر 6 ثوانٍ لتخطيه تلقائياً...');
-      await new Promise(r => setTimeout(r, 6000));
+    let title = await page.title();
+    if (title && (title.includes('Just a moment') || title.includes('Attention Required') || title.includes('Cloudflare'))) {
+      console.log('[Puppeteer + Cheerio] ⏳ اكتشاف تحدي Cloudflare... جاري الانتظار حتى يتم تخطيه تلقائياً...');
+      try {
+        await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 });
+      } catch (navErr) {
+        // Fallback wait if navigation event missed
+        await new Promise(r => setTimeout(r, 10000));
+      }
     }
 
     const html = await page.content();

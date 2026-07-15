@@ -115,10 +115,12 @@ async function syncSchedule() {
     const $ = cheerio.load(response.data);
     
     // Find all unique season links from the schedule tabs
+    // Structure: .tab-content > .media-block > .anime-card > a[href*="/seasons/"]
     const seasonLinks = new Set();
     $('.tab-content .media-block').each((i, block) => {
-      const href = $(block).find('a.anime-card, .anime-card a, .info a').first().attr('href');
-      if (href && href.includes('/seasons/')) {
+      // Get the first season link inside this block (image link or info link)
+      const href = $(block).find('a[href*="/seasons/"]').first().attr('href');
+      if (href && href !== `${BASE_URL}/seasons/` && href !== `${BASE_URL}/seasons`) {
         seasonLinks.add(href);
       }
     });
