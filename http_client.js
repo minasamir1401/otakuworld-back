@@ -44,6 +44,73 @@ async function getGot() {
   return gotInstance;
 }
 
+// Lazy load Puppeteer Extra with Stealth
+let puppeteerInstance = null;
+async function getPuppeteer() {
+  if (!puppeteerInstance) {
+    const puppeteerExtra = require('puppeteer-extra');
+    const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+    puppeteerExtra.use(StealthPlugin());
+    puppeteerInstance = puppeteerExtra;
+  }
+  return puppeteerInstance;
+}
+
+let sharedBrowser = null;
+async function fetchWithPuppeteer(url, proxyUrl = null) {
+  const puppeteer = await getPuppeteer();
+  console.log(`[Puppeteer + Cheerio] 🛡️ جاري تشغيل المتصفح الخفي (Stealth Browser) لفتح الصفحة وتجاوز الحظر: ${url}`);
+  
+  const args = [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-accelerated-2d-canvas',
+    '--no-first-run',
+    '--no-zygote',
+    '--disable-gpu'
+  ];
+  if (proxyUrl) {
+    const cleanProxy = proxyUrl.replace(/http:\/\/[^@]+@/, 'http://');
+    args.push(`--proxy-server=${cleanProxy}`);
+  }
+
+  if (!sharedBrowser || !sharedBrowser.isConnected()) {
+    sharedBrowser = await puppeteer.launch({
+      headless: 'new',
+      args
+    });
+  }
+
+  const page = await sharedBrowser.newPage();
+  if (proxyUrl && proxyUrl.includes('@')) {
+    const match = proxyUrl.match(/http:\/\/([^:]+):([^@]+)@/);
+    if (match) {
+      await page.authenticate({ username: match[1], password: match[2] });
+    }
+  }
+
+  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36');
+
+  try {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 35000 });
+    
+    // Check if Cloudflare JS challenge is currently running inside browser
+    const title = await page.title();
+    if (title && (title.includes('Just a moment') || title.includes('Attention Required'))) {
+      console.log('[Puppeteer + Cheerio] ⏳ اكتشاف تحدي جافاسكربت من Cloudflare داخل المتصفح... انتظر 6 ثوانٍ لتخطيه تلقائياً...');
+      await new Promise(r => setTimeout(r, 6000));
+    }
+
+    const html = await page.content();
+    await page.close();
+    return { data: html, status: 200, headers: {} };
+  } catch (err) {
+    try { await page.close(); } catch (e) {}
+    throw err;
+  }
+}
+
 // Helper to make request with proper HttpsProxyAgent when target is HTTPS
 async function makeProxyRequest(url, proxyUrl, options = {}) {
   const got = await getGot();
@@ -81,17 +148,6 @@ function isCloudflareBlocked(status, body) {
          lower.includes('403 forbidden');
 }
 
-// Fetch fresh list of public free proxies using got-scraping
-async function fetchFreeProxies() {
-  try {
-    const got = await getGot();
-    const res = await got.get('https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt', { timeout: { request: 10000 } });
-    return res.body.split('\n').map(p => p.trim()).filter(p => p);
-  } catch (e) {
-    return [];
-  }
-}
-
 // Test if a proxy works for animerco.org
 async function testProxy(proxyUrl, targetUrl) {
   try {
@@ -103,7 +159,7 @@ async function testProxy(proxyUrl, targetUrl) {
   return false;
 }
 
-// Find working proxy concurrently in batches (prioritizing Webshare pool)
+// Find working proxy in pool
 async function findWorkingProxy(targetUrl) {
   console.log('[Proxy Finder] Testing high-speed Webshare proxies first...');
   const shuffledWebshare = [...WEBSHARE_PROXIES].sort(() => 0.5 - Math.random());
@@ -114,89 +170,61 @@ async function findWorkingProxy(targetUrl) {
       return proxyUrl;
     }
   }
-
-  console.log('[Proxy Finder] Webshare pool blocked or unreachable, trying public proxies...');
-  const proxies = await fetchFreeProxies();
-  if (proxies.length === 0) return null;
-
-  const shuffled = proxies.sort(() => 0.5 - Math.random());
-  const BATCH_SIZE = 10;
-  for (let i = 0; i < Math.min(shuffled.length, 100); i += BATCH_SIZE) {
-    const batch = shuffled.slice(i, i + BATCH_SIZE);
-    const results = await Promise.all(batch.map(async (p) => {
-      const fullUrl = `http://${p}`;
-      return (await testProxy(fullUrl, targetUrl)) ? fullUrl : null;
-    }));
-    const working = results.filter(r => r);
-    if (working.length > 0) {
-      const selected = working[0];
-      console.log(`[Proxy Finder] Found working public proxy: ${selected}`);
-      cacheProxy(selected);
-      return selected;
-    }
-  }
   return null;
 }
 
 async function get(url, options = {}) {
   const got = await getGot();
 
-  // If user defined a custom proxy in environment, prioritize it
+  // 1. Try with custom proxy if explicitly set
   const customProxy = process.env.SCRAPER_PROXY;
   if (customProxy) {
-    console.log(`[HTTP Client] Using custom proxy: ${customProxy.replace(/:[^:@]+@/, ':***@')}`);
-    const response = await makeProxyRequest(url, customProxy, options);
-    if (isCloudflareBlocked(response.statusCode, response.body)) {
-      throw new Error(`🚨 [حظر Cloudflare] تم رفض الطلب عبر البروكسي المخصص (الحالة: ${response.statusCode}).`);
-    }
-    return { data: response.body, status: response.statusCode, headers: response.headers };
+    try {
+      const response = await makeProxyRequest(url, customProxy, options);
+      if (!isCloudflareBlocked(response.statusCode, response.body)) {
+        return { data: response.body, status: response.statusCode, headers: response.headers };
+      }
+    } catch (err) {}
   }
 
-  // Try cached proxy first (if exists)
+  // 2. Try cached proxy from pool
   let currentProxy = getCachedProxy();
   if (currentProxy) {
     try {
-      console.log(`[HTTP Client] Trying cached proxy...`);
       const response = await makeProxyRequest(url, currentProxy, options);
-      if (isCloudflareBlocked(response.statusCode, response.body)) {
-        throw new Error('Cached proxy blocked by Cloudflare');
+      if (!isCloudflareBlocked(response.statusCode, response.body)) {
+        return { data: response.body, status: response.statusCode, headers: response.headers };
       }
-      return { data: response.body, status: response.statusCode, headers: response.headers };
     } catch (err) {
-      console.log(`[Proxy] Cached proxy failed, selecting a fresh proxy from pool...`);
-      cacheProxy(null); // invalidate
+      cacheProxy(null);
     }
   }
 
-  // Try direct connection using got-scraping (TLS Fingerprint Spoofing)
+  // 3. Try direct connection with TLS spoofing
   try {
-    console.log('[HTTP Client] Requesting directly with TLS spoofing...');
     const response = await got.get(url, {
       timeout: { request: 8000 },
       ...options
     });
-    if (isCloudflareBlocked(response.statusCode, response.body)) {
-      const blockErr = new Error(`Cloudflare blocked direct request (Status: ${response.statusCode})`);
-      blockErr.statusCode = response.statusCode;
-      blockErr.isBlocked = true;
-      throw blockErr;
+    if (!isCloudflareBlocked(response.statusCode, response.body)) {
+      return { data: response.body, status: response.statusCode, headers: response.headers };
     }
-    return { data: response.body, status: response.statusCode, headers: response.headers };
-  } catch (err) {
-    const isBlocked = err.isBlocked || (err.response && (err.response.statusCode === 403 || isCloudflareBlocked(err.response.statusCode, err.response.body))) || err.code === 'ETIMEDOUT' || err.message.includes('403');
-    if (isBlocked) {
-      console.log('[Proxy] Direct request blocked or timed out. Switching to Webshare proxy rotator...');
-      const newProxy = await findWorkingProxy(url);
-      if (newProxy) {
-        const response = await makeProxyRequest(url, newProxy, options);
-        if (!isCloudflareBlocked(response.statusCode, response.body)) {
-          return { data: response.body, status: response.statusCode, headers: response.headers };
-        }
+  } catch (err) {}
+
+  // 4. Try rotating Webshare proxy pool
+  const newProxy = await findWorkingProxy(url);
+  if (newProxy) {
+    try {
+      const response = await makeProxyRequest(url, newProxy, options);
+      if (!isCloudflareBlocked(response.statusCode, response.body)) {
+        return { data: response.body, status: response.statusCode, headers: response.headers };
       }
-      throw new Error(`🚨 [حظر Cloudflare من السيرفر] خادم الاستضافة (VPS / Dokploy) محظور بالكامل من قِبل نظام حماية Cloudflare لموقع animerco.org (الحالة: 403 / تحدي الأمان). وجميع البروكسيات في القائمة لم تنجح في التخطي حالياً.`);
-    }
-    throw err;
+    } catch (e) {}
   }
+
+  // 5. ULTIMATE FALLBACK: Launch Puppeteer Stealth Browser to solve dynamic JS challenge & pass clean HTML to Cheerio
+  console.log(`[HTTP Client] ⚡ تم تفعيل التحالف الأقوى (Puppeteer Stealth + Cheerio) لتجاوز تحديات الصفحة وتحليلها.`);
+  return await fetchWithPuppeteer(url, newProxy || customProxy);
 }
 
 module.exports = {

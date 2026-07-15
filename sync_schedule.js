@@ -1,5 +1,6 @@
 const { PrismaClient } = require('@prisma/client');
 const httpClient = require('./http_client');
+const { uploadImageToSupabase } = require('./image_uploader');
 const cheerio = require('cheerio');
 
 const prisma = new PrismaClient();
@@ -169,13 +170,15 @@ async function syncSchedule() {
 
         const slug = animeUrl.replace(`${BASE_URL}/animes/`, '').replace(/\//g, '');
         const title = $$('.tornado-header h1, h1, .media-story h1').first().text().trim() || slug;
+        const rawPoster = $$('.anime-card img').attr('src') || $$('.anime-card img').attr('data-src') || null;
+        const finalPoster = await uploadImageToSupabase(rawPoster, slug);
 
         anime = await prisma.anime.create({
           data: {
             title: title,
             slug: slug,
             url: animeUrl,
-            poster: $$('.anime-card img').attr('src') || $$('.anime-card img').attr('data-src') || null,
+            poster: finalPoster,
             rating: '10.0',
             year: details.year || '2026',
             synopsis: details.synopsis,

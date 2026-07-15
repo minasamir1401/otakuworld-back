@@ -1,5 +1,6 @@
 const { PrismaClient } = require('@prisma/client');
 const httpClient = require('./http_client');
+const { uploadImageToSupabase } = require('./image_uploader');
 const cheerio = require('cheerio');
 
 const fs = require('fs');
@@ -252,12 +253,15 @@ async function main() {
 
         const animeType = isMovie ? 'Movie' : (details.type || 'TV');
 
+        // Upload poster to Supabase Storage (if configured)
+        const finalPoster = await uploadImageToSupabase(animeData.poster, animeData.slug);
+
         // Upsert Anime Metadata
         const anime = await prisma.anime.upsert({
           where: { url: animeData.url },
           update: {
             title: animeData.title,
-            poster: animeData.poster,
+            poster: finalPoster,
             rating: animeData.rating,
             year: animeData.year,
             synopsis: details.synopsis,
@@ -270,7 +274,7 @@ async function main() {
             title: animeData.title,
             slug: animeData.slug,
             url: animeData.url,
-            poster: animeData.poster,
+            poster: finalPoster,
             rating: animeData.rating,
             year: animeData.year,
             synopsis: details.synopsis,
