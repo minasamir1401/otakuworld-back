@@ -3,6 +3,20 @@ const path = require('path');
 
 const proxyCacheFile = path.join(__dirname, 'working_proxy.txt');
 
+// 10 Webshare Proxies
+const WEBSHARE_PROXIES = [
+  'http://eepvcuhn:pak11kmxun9g@31.59.20.176:6754',
+  'http://eepvcuhn:pak11kmxun9g@31.56.127.193:7684',
+  'http://eepvcuhn:pak11kmxun9g@45.38.107.97:6014',
+  'http://eepvcuhn:pak11kmxun9g@198.105.121.200:6462',
+  'http://eepvcuhn:pak11kmxun9g@64.137.96.74:6641',
+  'http://eepvcuhn:pak11kmxun9g@198.23.243.226:6361',
+  'http://eepvcuhn:pak11kmxun9g@38.154.185.97:6370',
+  'http://eepvcuhn:pak11kmxun9g@84.247.60.125:6095',
+  'http://eepvcuhn:pak11kmxun9g@142.111.67.146:5611',
+  'http://eepvcuhn:pak11kmxun9g@191.96.254.138:6185'
+];
+
 // Load cached working proxy
 function getCachedProxy() {
   if (fs.existsSync(proxyCacheFile)) {
@@ -20,7 +34,7 @@ function cacheProxy(proxyUrl) {
   } catch (e) {}
 }
 
-// Lazy load gotScraping (since it is ESM only)
+// Lazy load gotScraping
 let gotInstance = null;
 async function getGot() {
   if (!gotInstance) {
@@ -30,60 +44,29 @@ async function getGot() {
   return gotInstance;
 }
 
-// Fetch fresh list of public free proxies using got-scraping
-async function fetchFreeProxies() {
+// Helper to make request with proper HttpsProxyAgent when target is HTTPS
+async function makeProxyRequest(url, proxyUrl, options = {}) {
+  const got = await getGot();
+  let HttpsProxyAgent = null;
   try {
-    const got = await getGot();
-    const res = await got.get('https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt', { timeout: { request: 10000 } });
-    return res.body.split('\n').map(p => p.trim()).filter(p => p);
+    const hpagent = await import('hpagent');
+    HttpsProxyAgent = hpagent.HttpsProxyAgent;
   } catch (e) {
-    console.error('[Proxy Finder] Failed to fetch free proxy list:', e.message);
-    return [];
+    try {
+      const httpsProxyAgentPkg = require('https-proxy-agent');
+      HttpsProxyAgent = httpsProxyAgentPkg.HttpsProxyAgent;
+    } catch (e2) {}
   }
-}
 
-// Test if a proxy works for animerco.org
-async function testProxy(proxyStr, targetUrl) {
-  try {
-    const got = await getGot();
-    const res = await got.get(targetUrl, {
-      proxyUrl: `http://${proxyStr}`,
-      timeout: { request: 6000 },
-      retry: { limit: 0 }
-    });
-    if (res.statusCode === 200) {
-      return true;
-    }
-  } catch (e) {}
-  return false;
-}
+  const agentOpts = HttpsProxyAgent && url.startsWith('https:')
+    ? { agent: { https: new HttpsProxyAgent({ proxy: proxyUrl, timeout: 15000 }) } }
+    : { proxyUrl };
 
-// Find working proxy concurrently in batches
-async function findWorkingProxy(targetUrl) {
-  console.log('[Proxy Finder] Searching for a working free proxy...');
-  const proxies = await fetchFreeProxies();
-  if (proxies.length === 0) return null;
-
-  // Shuffle proxies
-  const shuffled = proxies.sort(() => 0.5 - Math.random());
-  
-  const BATCH_SIZE = 10;
-  for (let i = 0; i < Math.min(shuffled.length, 250); i += BATCH_SIZE) {
-    const batch = shuffled.slice(i, i + BATCH_SIZE);
-    const promises = batch.map(async (p) => {
-      const works = await testProxy(p, targetUrl);
-      return works ? p : null;
-    });
-    const results = await Promise.all(promises);
-    const working = results.filter(r => r);
-    if (working.length > 0) {
-      const selected = `http://${working[0]}`;
-      console.log(`[Proxy Finder] Found working proxy: ${selected}`);
-      cacheProxy(selected);
-      return selected;
-    }
-  }
-  return null;
+  return await got.get(url, {
+    ...agentOpts,
+    timeout: { request: 20000 },
+    ...options
+  });
 }
 
 function isCloudflareBlocked(status, body) {
@@ -98,40 +81,89 @@ function isCloudflareBlocked(status, body) {
          lower.includes('403 forbidden');
 }
 
+// Fetch fresh list of public free proxies using got-scraping
+async function fetchFreeProxies() {
+  try {
+    const got = await getGot();
+    const res = await got.get('https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt', { timeout: { request: 10000 } });
+    return res.body.split('\n').map(p => p.trim()).filter(p => p);
+  } catch (e) {
+    return [];
+  }
+}
+
+// Test if a proxy works for animerco.org
+async function testProxy(proxyUrl, targetUrl) {
+  try {
+    const res = await makeProxyRequest(targetUrl, proxyUrl, { retry: { limit: 0 } });
+    if (res.statusCode === 200 && !isCloudflareBlocked(res.statusCode, res.body)) {
+      return true;
+    }
+  } catch (e) {}
+  return false;
+}
+
+// Find working proxy concurrently in batches (prioritizing Webshare pool)
+async function findWorkingProxy(targetUrl) {
+  console.log('[Proxy Finder] Testing high-speed Webshare proxies first...');
+  const shuffledWebshare = [...WEBSHARE_PROXIES].sort(() => 0.5 - Math.random());
+  for (const proxyUrl of shuffledWebshare) {
+    if (await testProxy(proxyUrl, targetUrl)) {
+      console.log(`[Proxy Finder] Found working Webshare proxy: ${proxyUrl.replace(/eepvcuhn:pak11kmxun9g@/, '***@')}`);
+      cacheProxy(proxyUrl);
+      return proxyUrl;
+    }
+  }
+
+  console.log('[Proxy Finder] Webshare pool blocked or unreachable, trying public proxies...');
+  const proxies = await fetchFreeProxies();
+  if (proxies.length === 0) return null;
+
+  const shuffled = proxies.sort(() => 0.5 - Math.random());
+  const BATCH_SIZE = 10;
+  for (let i = 0; i < Math.min(shuffled.length, 100); i += BATCH_SIZE) {
+    const batch = shuffled.slice(i, i + BATCH_SIZE);
+    const results = await Promise.all(batch.map(async (p) => {
+      const fullUrl = `http://${p}`;
+      return (await testProxy(fullUrl, targetUrl)) ? fullUrl : null;
+    }));
+    const working = results.filter(r => r);
+    if (working.length > 0) {
+      const selected = working[0];
+      console.log(`[Proxy Finder] Found working public proxy: ${selected}`);
+      cacheProxy(selected);
+      return selected;
+    }
+  }
+  return null;
+}
+
 async function get(url, options = {}) {
   const got = await getGot();
 
   // If user defined a custom proxy in environment, prioritize it
   const customProxy = process.env.SCRAPER_PROXY;
   if (customProxy) {
-    console.log(`[HTTP Client] Using custom proxy: ${customProxy}`);
-    const response = await got.get(url, {
-      proxyUrl: customProxy,
-      timeout: { request: 20000 },
-      ...options
-    });
+    console.log(`[HTTP Client] Using custom proxy: ${customProxy.replace(/:[^:@]+@/, ':***@')}`);
+    const response = await makeProxyRequest(url, customProxy, options);
     if (isCloudflareBlocked(response.statusCode, response.body)) {
-      throw new Error(`🚨 [حظر Cloudflare] تم رفض الطلب حتى عبر البروكسي المخصص (الحالة: ${response.statusCode}). تأكد من أن البروكسي المستخدم في SCRAPER_PROXY فعال ومناسب لتجاوز Cloudflare.`);
+      throw new Error(`🚨 [حظر Cloudflare] تم رفض الطلب عبر البروكسي المخصص (الحالة: ${response.statusCode}).`);
     }
     return { data: response.body, status: response.statusCode, headers: response.headers };
   }
 
-  // Otherwise, try with cached proxy first (if exists)
+  // Try cached proxy first (if exists)
   let currentProxy = getCachedProxy();
   if (currentProxy) {
     try {
-      console.log(`[HTTP Client] Trying cached proxy: ${currentProxy}`);
-      const response = await got.get(url, {
-        proxyUrl: currentProxy,
-        timeout: { request: 12000 },
-        ...options
-      });
+      console.log(`[HTTP Client] Trying cached proxy...`);
+      const response = await makeProxyRequest(url, currentProxy, options);
       if (isCloudflareBlocked(response.statusCode, response.body)) {
         throw new Error('Cached proxy blocked by Cloudflare');
       }
       return { data: response.body, status: response.statusCode, headers: response.headers };
     } catch (err) {
-      console.log(`[Proxy] Cached proxy ${currentProxy} failed, finding a new one...`);
+      console.log(`[Proxy] Cached proxy failed, selecting a fresh proxy from pool...`);
       cacheProxy(null); // invalidate
     }
   }
@@ -153,19 +185,15 @@ async function get(url, options = {}) {
   } catch (err) {
     const isBlocked = err.isBlocked || (err.response && (err.response.statusCode === 403 || isCloudflareBlocked(err.response.statusCode, err.response.body))) || err.code === 'ETIMEDOUT' || err.message.includes('403');
     if (isBlocked) {
-      console.log('[Proxy] Direct request blocked (403/Challenge/Timeout). Initiating automatic free proxy rotator...');
+      console.log('[Proxy] Direct request blocked or timed out. Switching to Webshare proxy rotator...');
       const newProxy = await findWorkingProxy(url);
       if (newProxy) {
-        const response = await got.get(url, {
-          proxyUrl: newProxy,
-          timeout: { request: 20000 },
-          ...options
-        });
+        const response = await makeProxyRequest(url, newProxy, options);
         if (!isCloudflareBlocked(response.statusCode, response.body)) {
           return { data: response.body, status: response.statusCode, headers: response.headers };
         }
       }
-      throw new Error(`🚨 [حظر Cloudflare من السيرفر] خادم الاستضافة (VPS / Dokploy) محظور بالكامل من قِبل نظام حماية Cloudflare لموقع animerco.org (الحالة: 403 / تحدي الأمان). البروكسيات المجانية العامة تم حظرها أيضاً أو انتهت مهلتها لأنها عناوين مكشوفة.\n💡 الحل الدائم والنهائي: ضع بروكسي فعال (Residential Proxy) أو أضف رابط أداة FlareSolverr في إعدادات Dokploy عبر متغير البيئة: SCRAPER_PROXY ثم اضغط Redeploy.`);
+      throw new Error(`🚨 [حظر Cloudflare من السيرفر] خادم الاستضافة (VPS / Dokploy) محظور بالكامل من قِبل نظام حماية Cloudflare لموقع animerco.org (الحالة: 403 / تحدي الأمان). وجميع البروكسيات في القائمة لم تنجح في التخطي حالياً.`);
     }
     throw err;
   }
