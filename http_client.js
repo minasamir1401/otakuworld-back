@@ -20,7 +20,29 @@ const WEBSHARE_PROXIES = [
   'http://eepvcuhn:pak11kmxun9g@191.96.254.138:6185'
 ];
 
+let _cachedBypassConfig = { cfCookie: '', userAgent: '' };
+
+// Background sync from Prisma AppConfig
+async function syncFromDb() {
+  try {
+    if (process.env.DATABASE_URL) {
+      const { PrismaClient } = require('@prisma/client');
+      const prisma = new PrismaClient();
+      const cfg = await prisma.appConfig.findUnique({ where: { id: 'singleton' } });
+      await prisma.$disconnect();
+      if (cfg && cfg.cfCookie) {
+        _cachedBypassConfig = { cfCookie: cfg.cfCookie, userAgent: cfg.userAgent || '' };
+      }
+    }
+  } catch (e) {}
+}
+syncFromDb();
+setInterval(syncFromDb, 30000);
+
 function getBypassConfig() {
+  if (_cachedBypassConfig && _cachedBypassConfig.cfCookie) {
+    return _cachedBypassConfig;
+  }
   const localConfig = path.join(__dirname, 'admin_config.json');
   const parentConfig = path.join(__dirname, '..', 'FRONT END', 'admin_config.json');
   

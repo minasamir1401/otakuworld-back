@@ -121,15 +121,38 @@ async function main() {
     console.log("User-Agent:", userAgent);
     console.log("Proxy Used:", workingProxy);
     
-    // Save locally
+    // Save locally to FRONT END and Backend
     const localConfigPath = path.resolve(__dirname, '..', 'FRONT END', 'admin_config.json');
-    if (fs.existsSync(localConfigPath)) {
-      const config = JSON.parse(fs.readFileSync(localConfigPath, 'utf8'));
-      config.cfCookie = cfCookieString;
-      config.userAgent = userAgent;
-      config.cfProxy = workingProxy;
-      fs.writeFileSync(localConfigPath, JSON.stringify(config, null, 2), 'utf8');
-      console.log("💾 Saved locally to admin_config.json");
+    const backendConfigPath = path.resolve(__dirname, 'admin_config.json');
+    
+    [localConfigPath, backendConfigPath].forEach(cfgPath => {
+      try {
+        let config = { username: 'admin', password: 'adminpassword' };
+        if (fs.existsSync(cfgPath)) {
+          config = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+        }
+        config.cfCookie = cfCookieString;
+        config.userAgent = userAgent;
+        config.cfProxy = workingProxy;
+        fs.writeFileSync(cfgPath, JSON.stringify(config, null, 2), 'utf8');
+        console.log(`💾 Saved locally to ${cfgPath}`);
+      } catch (e) {}
+    });
+
+    try {
+      if (process.env.DATABASE_URL) {
+        const { PrismaClient } = require('@prisma/client');
+        const prisma = new PrismaClient();
+        await prisma.appConfig.upsert({
+          where: { id: 'singleton' },
+          create: { id: 'singleton', cfCookie: cfCookieString, userAgent, cfProxy: workingProxy || null },
+          update: { cfCookie: cfCookieString, userAgent, cfProxy: workingProxy || null }
+        });
+        await prisma.$disconnect();
+        console.log("💾 Saved directly to local Postgres DB AppConfig");
+      }
+    } catch (e) {
+      console.warn("Could not save to direct Postgres DB:", e.message);
     }
     
     // Save to live server
