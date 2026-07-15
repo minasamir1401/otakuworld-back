@@ -238,6 +238,9 @@ async function syncSchedule() {
     console.log(`\n🎉 اكتملت المزامنة بنجاح! تم إضافة ${updatedCount} حلقة جديدة بالكامل.`);
   } catch (error) {
     console.error('❌ خطأ أثناء مزامنة جدول المواعيد:', error.message);
+    if (error.message.includes('[حظر Cloudflare') || error.message.includes('Cloudflare')) {
+      console.error(`\n=======================================================\n🛑 التفسير والسبب الرئيسي لفشل سحب جدول المواعيد (0 مواسم):\nسيرفر استضافة Dokploy محظور من قِبل نظام حماية Cloudflare لموقع animerco.org.\nوعندما حاول السكربت استخدام البروكسيات المجانية العامة، وجدها محظورة أيضاً أو ضعيفة جداً.\n\n📌 الحل المطلوب لكي يعمل السحب بنجاح 100%:\n1. احصل على بروكسي فعال (مثل Webshare أو ScraperAPI أو أداة FlareSolverr).\n2. أضفه في Dokploy في قسم Environment الخاص بالباك إند باسم:\n   SCRAPER_PROXY=http://username:password@ip:port\n3. اضغط Redeploy وجرب السحب مرة أخرى.\n=======================================================\n`);
+    }
   } finally {
     await prisma.$disconnect();
   }

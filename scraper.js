@@ -49,6 +49,9 @@ async function scrapeCatalogPage(page = 1, isMovie = false) {
     return { animes, hasNextPage };
   } catch (error) {
     console.error(`❌ خطأ أثناء فحص الصفحة ${page}:`, error.message);
+    if (error.message.includes('[حظر Cloudflare') || error.message.includes('Cloudflare')) {
+      console.error(`\n=======================================================\n🛑 التفسير والسبب الرئيسي لعدم العثور على أنميات (0 مواد):\nسيرفر استضافة Dokploy محظور من قِبل نظام حماية Cloudflare لموقع animerco.org.\nوعندما حاول السكربت استخدام البروكسيات المجانية العامة، وجدها محظورة أيضاً أو ضعيفة جداً.\n\n📌 الحل المطلوب لكي يعمل السحب بنجاح 100%:\n1. احصل على بروكسي فعال (مثل Webshare أو ScraperAPI أو أداة FlareSolverr).\n2. أضفه في Dokploy في قسم Environment الخاص بالباك إند باسم:\n   SCRAPER_PROXY=http://username:password@ip:port\n3. اضغط Redeploy وجرب السحب مرة أخرى.\n=======================================================\n`);
+    }
     return { animes: [], hasNextPage: false };
   }
 }

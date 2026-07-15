@@ -86,6 +86,18 @@ async function findWorkingProxy(targetUrl) {
   return null;
 }
 
+function isCloudflareBlocked(status, body) {
+  if (status === 403 || status === 503 || status === 429) return true;
+  if (!body || typeof body !== 'string') return false;
+  const lower = body.toLowerCase();
+  return lower.includes('just a moment') ||
+         lower.includes('attention required! | cloudflare') ||
+         lower.includes('enable javascript and cookies to continue') ||
+         lower.includes('chk_jschl') ||
+         lower.includes('cf-turnstile') ||
+         lower.includes('403 forbidden');
+}
+
 async function get(url, options = {}) {
   const got = await getGot();
 
@@ -98,6 +110,9 @@ async function get(url, options = {}) {
       timeout: { request: 20000 },
       ...options
     });
+    if (isCloudflareBlocked(response.statusCode, response.body)) {
+      throw new Error(`🚨 [حظر Cloudflare] تم رفض الطلب حتى عبر البروكسي المخصص (الحالة: ${response.statusCode}). تأكد من أن البروكسي المستخدم في SCRAPER_PROXY فعال ومناسب لتجاوز Cloudflare.`);
+    }
     return { data: response.body, status: response.statusCode, headers: response.headers };
   }
 
@@ -111,6 +126,9 @@ async function get(url, options = {}) {
         timeout: { request: 12000 },
         ...options
       });
+      if (isCloudflareBlocked(response.statusCode, response.body)) {
+        throw new Error('Cached proxy blocked by Cloudflare');
+      }
       return { data: response.body, status: response.statusCode, headers: response.headers };
     } catch (err) {
       console.log(`[Proxy] Cached proxy ${currentProxy} failed, finding a new one...`);
@@ -125,11 +143,17 @@ async function get(url, options = {}) {
       timeout: { request: 8000 },
       ...options
     });
+    if (isCloudflareBlocked(response.statusCode, response.body)) {
+      const blockErr = new Error(`Cloudflare blocked direct request (Status: ${response.statusCode})`);
+      blockErr.statusCode = response.statusCode;
+      blockErr.isBlocked = true;
+      throw blockErr;
+    }
     return { data: response.body, status: response.statusCode, headers: response.headers };
   } catch (err) {
-    const isBlocked = err.response && err.response.statusCode === 403 || err.code === 'ETIMEDOUT' || err.message.includes('403');
+    const isBlocked = err.isBlocked || (err.response && (err.response.statusCode === 403 || isCloudflareBlocked(err.response.statusCode, err.response.body))) || err.code === 'ETIMEDOUT' || err.message.includes('403');
     if (isBlocked) {
-      console.log('[Proxy] Direct request blocked (403/Timeout). Initiating automatic free proxy rotator...');
+      console.log('[Proxy] Direct request blocked (403/Challenge/Timeout). Initiating automatic free proxy rotator...');
       const newProxy = await findWorkingProxy(url);
       if (newProxy) {
         const response = await got.get(url, {
@@ -137,8 +161,11 @@ async function get(url, options = {}) {
           timeout: { request: 20000 },
           ...options
         });
-        return { data: response.body, status: response.statusCode, headers: response.headers };
+        if (!isCloudflareBlocked(response.statusCode, response.body)) {
+          return { data: response.body, status: response.statusCode, headers: response.headers };
+        }
       }
+      throw new Error(`🚨 [حظر Cloudflare من السيرفر] خادم الاستضافة (VPS / Dokploy) محظور بالكامل من قِبل نظام حماية Cloudflare لموقع animerco.org (الحالة: 403 / تحدي الأمان). البروكسيات المجانية العامة تم حظرها أيضاً أو انتهت مهلتها لأنها عناوين مكشوفة.\n💡 الحل الدائم والنهائي: ضع بروكسي فعال (Residential Proxy) أو أضف رابط أداة FlareSolverr في إعدادات Dokploy عبر متغير البيئة: SCRAPER_PROXY ثم اضغط Redeploy.`);
     }
     throw err;
   }
